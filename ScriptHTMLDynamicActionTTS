@@ -1,0 +1,177 @@
+<script>
+(function(){
+  console.log("TTS con fallback local");
+
+  const OPENAI_KEY = "----"; // pon tu key si la tienes
+  const OPENAI_URL = "https://api.openai.com/v1/audio/speech";
+  const AUTO_PLAY = false; // true para reproducir automáticamente
+  const cache = new Map(); 
+
+  function log(...a){ console.log("[TTS]", ...a); }
+
+  function speakLocal(text){
+    return new Promise((resolve) => {
+      if(!window.speechSynthesis){
+        log("No hay speechSynthesis disponible");
+        resolve(false);
+        return;
+      }
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.rate = 1; // velocidad: 0.1 - 10
+      utter.pitch = 1;
+      const voices = window.speechSynthesis.getVoices();
+      const v = voices.find(x => /es|spanish/i.test(x.lang || x.name)) || voices[0];
+      if(v) utter.voice = v;
+      utter.onend = () => { resolve(true); };
+      utter.onerror = (e) => { console.error("speechSynthesis error", e); resolve(false); };
+      window.speechSynthesis.cancel(); // cancelar previos si hay
+      window.speechSynthesis.speak(utter);
+    });
+  }
+
+  async function speakOpenAI(text){
+    if(!OPENAI_KEY) return null;
+    try{
+      log("Solicitando OpenAI TTS:", text.substring(0,80));
+      const res = await fetch(OPENAI_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + OPENAI_KEY
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini-tts",
+          voice: "alloy",
+          input: text,
+          format: "wav"
+        })
+      });
+
+      if(!res.ok){
+        const body = await res.json().catch(()=>null) || await res.text().catch(()=>null);
+        log("OpenAI TTS error:", res.status, body);
+        // Si es 429 / insufficient_quota, devuelvo null para fallback
+        return null;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      return url;
+    }catch(e){
+      console.error("Error fetch OpenAI TTS:", e);
+      return null;
+    }
+  }
+
+  async function processResponseNode(node){
+    try{
+      if(!node || node.nodeType !== 1) return;
+      if(node.dataset.ttsProcessed === "1") return;
+      const text = (node.innerText || "").trim();
+      if(!text) return;
+      node.dataset.ttsProcessed = "1";
+      log("Respuesta detectada:", text.substring(0,80));
+
+      let controls = node.querySelector(".tts-controls");
+      if(!controls){
+        controls = document.createElement("div");
+        controls.className = "tts-controls";
+        controls.style.marginTop = "6px";
+        node.appendChild(controls);
+      }
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tts-play-btn";
+      btn.style.cursor = "pointer";
+      btn.style.marginRight = "6px";
+      btn.textContent = "🔊 Escuchar";
+      controls.appendChild(btn);
+
+      let audioUrl = cache.get(text) || null;
+      let audioEl = null;
+
+      btn.addEventListener("click", async () => {
+        try{
+          btn.disabled = true;
+          btn.textContent = "Generando...";
+          if(!audioUrl && OPENAI_KEY){
+            audioUrl = await speakOpenAI(text);
+            if(audioUrl){
+              cache.set(text, audioUrl);
+            }
+          }
+
+          if(audioUrl){
+            if(!audioEl) audioEl = new Audio(audioUrl);
+            try{
+              await audioEl.play();
+            }catch(err){
+              log("play() fallo:", err);
+              audioEl.controls = true;
+            }
+            btn.textContent = "Escuchar 🔊";
+            btn.disabled = false;
+            return;
+          }
+
+          btn.textContent = "Usando voz del navegador..."; //Si hay algún problema con la API Key se utiliza esta opción
+          const ok = await speakLocal(text);
+          if(!ok) {
+            btn.textContent = "Error TTS";
+          } else {
+            btn.textContent = "Escuchar 🔊";
+          }
+        }catch(e){
+          console.error("Error en click btn:", e);
+          btn.textContent = "Error";
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      if(AUTO_PLAY){
+        try{ btn.click(); }catch(e){ log("Autoplay no permitido"); }
+      }
+    }catch(e){
+      console.error("processResponseNode error", e);
+    }
+  }
+
+  const observer = new MutationObserver(mutations => {
+    for(const m of mutations){
+      for(const n of m.addedNodes){
+        if(n.nodeType !== 1) continue;
+        if(n.classList && (n.classList.contains("a-ChatAssist-message--response") || n.classList.contains("a-ChatAssist-message") || n.classList.contains("assistant-response"))){
+          processResponseNode(n);
+          continue;
+        }
+        const possible = n.querySelector && n.querySelector(".a-ChatAssist-message--response, .a-ChatAssist-message, .assistant-response");
+        if(possible){
+          const nodes = n.querySelectorAll(".a-ChatAssist-message--response, .a-ChatAssist-message, .assistant-response");
+          nodes.forEach(nn => processResponseNode(nn));
+          continue;
+        }
+        const txt = (n.innerText || "").trim();
+        if(txt && txt.length > 20){
+          processResponseNode(n);
+        }
+      }
+    }
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true });
+  log("Observer registrado");
+
+  setTimeout(()=> {
+    try{
+      const existing = document.querySelectorAll(".a-ChatAssist-message--response, .a-ChatAssist-message, .assistant-response");
+      existing.forEach(n => processResponseNode(n));
+      log("Procesadas burbujas existentes:", existing.length);
+    }catch(e){}
+  }, 1000);
+
+  window.__tts_cache_size = () => cache.size;
+
+})();
+</script>
