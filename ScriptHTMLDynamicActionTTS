@@ -24,7 +24,7 @@
       if(v) utter.voice = v;
       utter.onend = () => { resolve(true); };
       utter.onerror = (e) => { console.error("speechSynthesis error", e); resolve(false); };
-      window.speechSynthesis.cancel(); // cancelar previos si hay
+      window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utter);
     });
   }
@@ -50,7 +50,7 @@
       if(!res.ok){
         const body = await res.json().catch(()=>null) || await res.text().catch(()=>null);
         log("OpenAI TTS error:", res.status, body);
-        // Si es 429 / insufficient_quota, devuelvo null para fallback
+        // Si es 429 / insufficient_quota, devolvemos null para fallback
         return null;
       }
 
